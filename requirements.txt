@@ -1,7 +1,8 @@
-yfinance
 numpy
 pandas
+yfinance
 matplotlib
 scipy
 flask
 flask-cors
+pytest

@@ -4,36 +4,34 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Smart Portfolio Optimizer — Interactive Dashboard</title>
-    <meta name="description" content="Optimize your stock portfolio using Modern Portfolio Theory with interactive efficient frontier visualization and multiple optimization strategies.">
+    <meta name="description" content="Optimize your stock portfolio using Modern Portfolio Theory with Black-Litterman, HRP, sector constraints, and interactive visualizations.">
 
-    <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-
-    <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-
-    <!-- App Styles -->
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
-    <!-- ── Header ─────────────────────────────────────────────── -->
+
+    <!-- ── Header ─────────────────────────────────────────── -->
     <header id="app-header">
         <div class="header-inner">
             <div class="logo">
                 <span class="logo-icon">◈</span>
                 <h1>Smart Portfolio <span class="accent">Optimizer</span></h1>
             </div>
-            <p class="tagline">Modern Portfolio Theory · Powered by Data</p>
+            <p class="tagline">Modern Portfolio Theory · Black-Litterman · HRP</p>
         </div>
     </header>
 
     <main id="app-main">
-        <!-- ── Input Panel ────────────────────────────────────── -->
+
+        <!-- ── Input Panel ────────────────────────────────── -->
         <section id="input-panel" class="glass-panel">
             <h2 class="section-title">Configure Portfolio</h2>
 
+            <!-- Tickers -->
             <div class="input-group">
                 <label for="ticker-input">Add Tickers</label>
                 <div class="ticker-input-wrapper">
@@ -43,6 +41,7 @@
                 <p class="input-hint">Press Enter or comma to add · Click pill to remove</p>
             </div>
 
+            <!-- Dates -->
             <div class="input-row">
                 <div class="input-group">
                     <label for="start-date">Start Date</label>
@@ -54,6 +53,7 @@
                 </div>
             </div>
 
+            <!-- Rate & Sims -->
             <div class="input-row">
                 <div class="input-group">
                     <label for="risk-free-rate">Risk-Free Rate</label>
@@ -73,6 +73,80 @@
                 </div>
             </div>
 
+            <!-- Transaction Cost & Rebalance -->
+            <div class="input-row">
+                <div class="input-group">
+                    <label for="cost-bps">Transaction Cost</label>
+                    <div class="slider-wrapper">
+                        <input type="range" id="cost-bps" min="0" max="50" step="1" value="10">
+                        <span id="cost-value" class="slider-value">10 bps</span>
+                    </div>
+                </div>
+                <div class="input-group">
+                    <label for="rebalance-freq">Rebalance</label>
+                    <select id="rebalance-freq">
+                        <option value="monthly">Monthly</option>
+                        <option value="quarterly" selected>Quarterly</option>
+                        <option value="yearly">Yearly</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Collapsible Advanced: Black-Litterman Views -->
+            <details class="advanced-panel" id="bl-panel">
+                <summary class="advanced-toggle">
+                    <span class="toggle-icon">▸</span> Black-Litterman Views
+                    <span class="badge">Advanced</span>
+                </summary>
+                <div class="advanced-content">
+                    <p class="input-hint">Add your market views per ticker. Leave empty to skip B-L.</p>
+                    <div id="bl-views-container"></div>
+                    <button type="button" id="bl-add-view" class="btn-secondary btn-small">+ Add View</button>
+                </div>
+            </details>
+
+            <!-- Collapsible Advanced: Sector Constraints -->
+            <details class="advanced-panel" id="sector-panel">
+                <summary class="advanced-toggle">
+                    <span class="toggle-icon">▸</span> Sector Constraints
+                    <span class="badge">Advanced</span>
+                </summary>
+                <div class="advanced-content">
+                    <p class="input-hint">Map tickers to sectors, then set min/max per sector.</p>
+                    <div id="sector-mappings-container"></div>
+                    <hr class="divider">
+                    <div id="sector-bounds-container"></div>
+                    <button type="button" id="sector-refresh" class="btn-secondary btn-small">↻ Refresh Sectors</button>
+                </div>
+            </details>
+
+            <!-- Progress Steps -->
+            <div id="progress-container" class="progress-container" style="display:none;">
+                <div class="progress-steps">
+                    <div class="progress-step" data-stage="downloading">
+                        <span class="step-dot"></span>
+                        <span class="step-label">Downloading data</span>
+                    </div>
+                    <div class="progress-step" data-stage="computing">
+                        <span class="step-dot"></span>
+                        <span class="step-label">Computing returns</span>
+                    </div>
+                    <div class="progress-step" data-stage="optimizing">
+                        <span class="step-dot"></span>
+                        <span class="step-label">Optimizing</span>
+                    </div>
+                    <div class="progress-step" data-stage="simulating">
+                        <span class="step-dot"></span>
+                        <span class="step-label">Simulating</span>
+                    </div>
+                    <div class="progress-step" data-stage="metrics">
+                        <span class="step-dot"></span>
+                        <span class="step-label">Metrics & backtest</span>
+                    </div>
+                </div>
+                <p id="progress-message" class="progress-message">Initializing…</p>
+            </div>
+
             <button id="optimize-btn" class="btn-primary">
                 <span class="btn-text">Optimize Portfolio</span>
                 <span class="btn-loader" style="display:none;">
@@ -81,52 +155,99 @@
             </button>
         </section>
 
-        <!-- ── Error Banner ───────────────────────────────────── -->
+        <!-- ── Error Banner ───────────────────────────────── -->
         <div id="error-banner" class="error-banner" style="display:none;">
             <span class="error-icon">⚠</span>
             <span id="error-message"></span>
             <button id="error-close" class="error-close">✕</button>
         </div>
 
-        <!-- ── Results Container (hidden until optimization runs) -->
+        <!-- ── Results ────────────────────────────────────── -->
         <div id="results-container" style="display:none;">
-            <!-- Efficient Frontier Chart -->
-            <section id="chart-section" class="glass-panel">
-                <h2 class="section-title">Efficient Frontier</h2>
-                <div id="frontier-chart"></div>
-            </section>
 
-            <!-- Strategy Cards -->
-            <section id="strategies-section">
-                <h2 class="section-title">Optimization Strategies</h2>
-                <div id="strategy-cards" class="strategy-grid"></div>
-            </section>
+            <!-- Tab Navigation -->
+            <nav id="results-tabs" class="tabs-nav">
+                <button class="tab-btn active" data-tab="tab-frontier">Frontier</button>
+                <button class="tab-btn" data-tab="tab-performance">Performance</button>
+                <button class="tab-btn" data-tab="tab-analysis">Analysis</button>
+                <button class="tab-btn" data-tab="tab-backtest">Backtest</button>
+            </nav>
 
-            <!-- Metrics Table -->
-            <section id="metrics-section" class="glass-panel">
-                <h2 class="section-title">Performance Metrics</h2>
-                <div class="table-wrapper">
-                    <table id="metrics-table">
-                        <thead>
-                            <tr>
-                                <th>Strategy</th>
-                                <th>Annual Return</th>
-                                <th>Annual Vol</th>
-                                <th>Sharpe</th>
-                                <th>Sortino</th>
-                                <th>Max Drawdown</th>
-                                <th>Calmar</th>
-                            </tr>
-                        </thead>
-                        <tbody id="metrics-body"></tbody>
-                    </table>
-                </div>
-            </section>
+            <!-- TAB: Frontier -->
+            <div id="tab-frontier" class="tab-content active">
+                <section class="glass-panel">
+                    <h2 class="section-title">Efficient Frontier</h2>
+                    <div id="frontier-chart"></div>
+                </section>
+
+                <section id="strategies-section">
+                    <h2 class="section-title">Optimization Strategies</h2>
+                    <div id="strategy-cards" class="strategy-grid"></div>
+                </section>
+
+                <section class="glass-panel">
+                    <h2 class="section-title">Performance Metrics</h2>
+                    <div class="table-wrapper">
+                        <table id="metrics-table">
+                            <thead>
+                                <tr>
+                                    <th>Strategy</th>
+                                    <th>Annual Return</th>
+                                    <th>Annual Vol</th>
+                                    <th>Sharpe</th>
+                                    <th>Sortino</th>
+                                    <th>Max Drawdown</th>
+                                    <th>Calmar</th>
+                                </tr>
+                            </thead>
+                            <tbody id="metrics-body"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
+            <!-- TAB: Performance -->
+            <div id="tab-performance" class="tab-content">
+                <section class="glass-panel">
+                    <h2 class="section-title">Growth of $10,000</h2>
+                    <div id="growth-chart"></div>
+                </section>
+            </div>
+
+            <!-- TAB: Analysis -->
+            <div id="tab-analysis" class="tab-content">
+                <section class="glass-panel">
+                    <h2 class="section-title">Correlation Heatmap</h2>
+                    <div id="correlation-heatmap"></div>
+                </section>
+
+                <section id="assets-section">
+                    <h2 class="section-title">Individual Assets</h2>
+                    <div id="asset-cards" class="asset-grid"></div>
+                </section>
+            </div>
+
+            <!-- TAB: Backtest -->
+            <div id="tab-backtest" class="tab-content">
+                <section class="glass-panel">
+                    <h2 class="section-title">Rebalancing Backtest</h2>
+                    <div id="backtest-chart"></div>
+                </section>
+                <section class="glass-panel">
+                    <h2 class="section-title">Drawdown</h2>
+                    <div id="drawdown-chart"></div>
+                </section>
+                <section class="glass-panel">
+                    <h2 class="section-title">Rolling Sharpe (63-day)</h2>
+                    <div id="rolling-sharpe-chart"></div>
+                </section>
+            </div>
+
         </div>
     </main>
 
     <footer id="app-footer">
-        <p>Smart Portfolio Optimizer &middot; Modern Portfolio Theory &middot; Built with Python &amp; Plotly</p>
+        <p>Smart Portfolio Optimizer v2 &middot; MPT · B-L · HRP &middot; Built with Python &amp; Plotly</p>
     </footer>
 
     <script src="/static/js/app.js"></script>

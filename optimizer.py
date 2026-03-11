@@ -1,22 +1,67 @@
 """
 Smart Portfolio Optimizer — Core Engine
-Implements Modern Portfolio Theory with multiple optimization strategies.
+Implements Modern Portfolio Theory with multiple optimization strategies
+including Black-Litterman, Hierarchical Risk Parity, and sector constraints.
 """
 
+import hashlib
+import os
+import pickle
+import time
 import numpy as np
 import pandas as pd
 import yfinance as yf
 from scipy.optimize import minimize
+from scipy.cluster.hierarchy import linkage, leaves_list
+from scipy.spatial.distance import squareform
 from typing import Optional
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  Data Cache
+# ═══════════════════════════════════════════════════════════════════
+
+class DataCache:
+    """File-based cache for yfinance downloads. TTL = 1 hour."""
+
+    CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "portfolio_optimizer")
+    TTL = 3600  # seconds
+
+    @classmethod
+    def _key(cls, tickers: list[str], start: str, end: str) -> str:
+        raw = f"{','.join(sorted(tickers))}|{start}|{end}"
+        return hashlib.md5(raw.encode()).hexdigest()
+
+    @classmethod
+    def get(cls, tickers: list[str], start: str, end: str) -> Optional[pd.DataFrame]:
+        os.makedirs(cls.CACHE_DIR, exist_ok=True)
+        path = os.path.join(cls.CACHE_DIR, f"{cls._key(tickers, start, end)}.pkl")
+        if os.path.exists(path):
+            age = time.time() - os.path.getmtime(path)
+            if age < cls.TTL:
+                with open(path, "rb") as f:
+                    return pickle.load(f)
+        return None
+
+    @classmethod
+    def put(cls, tickers: list[str], start: str, end: str, data: pd.DataFrame):
+        os.makedirs(cls.CACHE_DIR, exist_ok=True)
+        path = os.path.join(cls.CACHE_DIR, f"{cls._key(tickers, start, end)}.pkl")
+        with open(path, "wb") as f:
+            pickle.dump(data, f)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Portfolio Optimizer
+# ═══════════════════════════════════════════════════════════════════
+
 class PortfolioOptimizer:
     """
-    Portfolio optimization engine using Modern Portfolio Theory.
+    Portfolio optimization engine.
 
-    Supports multiple strategies: Max Sharpe, Min Volatility,
-    Risk Parity, Equal Weight, and Max Return. Uses annualized
-    metrics (252 trading days) and scipy-based analytical optimization.
+    Strategies: Max Sharpe, Min Volatility, Risk Parity, Equal Weight,
+    Max Return, Black-Litterman, Hierarchical Risk Parity.
+    Supports sector constraints and transaction cost modeling.
     """
 
     TRADING_DAYS = 252
@@ -27,72 +72,106 @@ class PortfolioOptimizer:
         start_date: str,
         end_date: str,
         risk_free_rate: float = 0.01,
+        progress_callback=None,
     ):
         self.tickers = tickers
         self.start_date = start_date
         self.end_date = end_date
         self.risk_free_rate = risk_free_rate
+        self._progress = progress_callback or (lambda *a: None)
+
+        self._progress("downloading", "Fetching market data...")
         self.data = self._fetch_data()
+
+        self._progress("computing", "Computing returns & covariance...")
         self.daily_returns = self._calculate_returns()
         self.expected_returns = self.daily_returns.mean() * self.TRADING_DAYS
         self.cov_matrix = self.daily_returns.cov() * self.TRADING_DAYS
 
-    # ── Data fetching ────────────────────────────────────────────────
+    # ── Data fetching ────────────────────────────────────────────
 
     def _fetch_data(self) -> pd.DataFrame:
-        """Fetch historical adjusted-close prices from Yahoo Finance."""
+        """Fetch historical adjusted-close prices, with caching."""
+        cached = DataCache.get(self.tickers, self.start_date, self.end_date)
+        if cached is not None:
+            return cached
+
         df = yf.download(self.tickers, start=self.start_date, end=self.end_date)
         if "Adj Close" in df.columns.get_level_values(0):
             price = df["Adj Close"]
         else:
             price = df["Close"]
-        return price.dropna()
+        result = price.dropna()
+        DataCache.put(self.tickers, self.start_date, self.end_date, result)
+        return result
 
     def _calculate_returns(self) -> pd.DataFrame:
-        """Calculate daily percentage returns."""
         return self.data.pct_change().dropna()
 
-    # ── Portfolio math helpers ───────────────────────────────────────
+    # ── Portfolio math ───────────────────────────────────────────
 
-    def _portfolio_return(self, weights: np.ndarray) -> float:
-        return float(np.dot(weights, self.expected_returns))
+    def _portfolio_return(self, weights: np.ndarray, mu: np.ndarray = None) -> float:
+        if mu is None:
+            mu = self.expected_returns.values
+        return float(np.dot(weights, mu))
 
     def _portfolio_volatility(self, weights: np.ndarray) -> float:
-        return float(np.sqrt(np.dot(weights.T, np.dot(self.cov_matrix, weights))))
+        return float(np.sqrt(weights.T @ self.cov_matrix.values @ weights))
 
-    def _portfolio_sharpe(self, weights: np.ndarray) -> float:
-        ret = self._portfolio_return(weights)
+    def _portfolio_sharpe(self, weights: np.ndarray, mu: np.ndarray = None) -> float:
+        ret = self._portfolio_return(weights, mu)
         vol = self._portfolio_volatility(weights)
         return (ret - self.risk_free_rate) / vol if vol > 0 else 0.0
 
     @staticmethod
     def _make_bounds(n: int, bounds: Optional[list[tuple[float, float]]] = None):
-        """Create per-asset weight bounds. Default: (0, 1) for each."""
-        if bounds:
-            return bounds
-        return [(0.0, 1.0)] * n
+        return bounds if bounds else [(0.0, 1.0)] * n
 
     @staticmethod
     def _weight_constraint(weights: np.ndarray) -> float:
-        """Equality constraint: weights must sum to 1."""
         return float(np.sum(weights) - 1.0)
 
-    # ── Monte Carlo simulation ───────────────────────────────────────
+    def _build_sector_constraints(
+        self,
+        sectors: dict[str, str],
+        sector_bounds: dict[str, tuple[float, float]],
+    ) -> list[dict]:
+        """Build scipy constraint dicts for sector-level weight limits."""
+        constraints = []
+        if not sectors or not sector_bounds:
+            return constraints
+
+        # Group ticker indices by sector
+        sector_groups: dict[str, list[int]] = {}
+        for i, t in enumerate(self.tickers):
+            sec = sectors.get(t, "Other")
+            sector_groups.setdefault(sec, []).append(i)
+
+        for sec, indices in sector_groups.items():
+            if sec in sector_bounds:
+                lo, hi = sector_bounds[sec]
+                # Sum of weights in sector >= lo
+                constraints.append({
+                    "type": "ineq",
+                    "fun": lambda w, idx=indices, lb=lo: float(np.sum(w[idx]) - lb),
+                })
+                # Sum of weights in sector <= hi
+                constraints.append({
+                    "type": "ineq",
+                    "fun": lambda w, idx=indices, ub=hi: float(ub - np.sum(w[idx])),
+                })
+        return constraints
+
+    # ── Monte Carlo simulation ───────────────────────────────────
 
     def simulate_portfolios(self, num_portfolios: int = 10000) -> dict:
-        """
-        Generate random portfolios using Dirichlet distribution.
-        Returns dict of arrays: returns, volatility, sharpe, weights.
-        """
+        self._progress("simulating", f"Simulating {num_portfolios:,} portfolios...")
         n = len(self.tickers)
         all_weights = np.random.dirichlet(np.ones(n), size=num_portfolios)
-
-        returns_arr = all_weights @ self.expected_returns.values
-        vol_arr = np.array([
-            self._portfolio_volatility(w) for w in all_weights
-        ])
+        mu = self.expected_returns.values
+        returns_arr = all_weights @ mu
+        vol_arr = np.array([self._portfolio_volatility(w) for w in all_weights])
         sharpe_arr = (returns_arr - self.risk_free_rate) / vol_arr
-
         return {
             "returns": returns_arr.tolist(),
             "volatility": vol_arr.tolist(),
@@ -100,28 +179,28 @@ class PortfolioOptimizer:
             "weights": all_weights.tolist(),
         }
 
-    # ── Analytical optimization strategies ───────────────────────────
+    # ── Analytical strategies ────────────────────────────────────
 
     def _optimize(
         self,
         objective: str,
-        bounds: Optional[list[tuple[float, float]]] = None,
+        bounds=None,
+        mu: np.ndarray = None,
+        extra_constraints: list[dict] = None,
     ) -> dict:
-        """
-        Run scipy minimization for a given objective.
-        objective: 'max_sharpe' | 'min_volatility' | 'max_return'
-        """
         n = len(self.tickers)
         x0 = np.ones(n) / n
         bnd = self._make_bounds(n, bounds)
         constraints = [{"type": "eq", "fun": self._weight_constraint}]
+        if extra_constraints:
+            constraints.extend(extra_constraints)
 
         if objective == "max_sharpe":
-            fun = lambda w: -self._portfolio_sharpe(w)
+            fun = lambda w: -self._portfolio_sharpe(w, mu)
         elif objective == "min_volatility":
             fun = lambda w: self._portfolio_volatility(w)
         elif objective == "max_return":
-            fun = lambda w: -self._portfolio_return(w)
+            fun = lambda w: -self._portfolio_return(w, mu)
         else:
             raise ValueError(f"Unknown objective: {objective}")
 
@@ -129,14 +208,10 @@ class PortfolioOptimizer:
             fun, x0, method="SLSQP", bounds=bnd, constraints=constraints,
             options={"ftol": 1e-12, "maxiter": 1000},
         )
-
-        weights = result.x
-        weights = np.maximum(weights, 0)  # clip negatives
-        weights /= weights.sum()          # re-normalize
-
-        ret = self._portfolio_return(weights)
+        weights = np.maximum(result.x, 0)
+        weights /= weights.sum()
+        ret = self._portfolio_return(weights, mu)
         vol = self._portfolio_volatility(weights)
-
         return {
             "weights": weights.tolist(),
             "return": ret,
@@ -144,20 +219,19 @@ class PortfolioOptimizer:
             "sharpe": (ret - self.risk_free_rate) / vol if vol > 0 else 0.0,
         }
 
-    def max_sharpe(self, bounds=None) -> dict:
-        """Find the portfolio with the highest Sharpe ratio."""
-        return self._optimize("max_sharpe", bounds)
+    def max_sharpe(self, bounds=None, sectors=None, sector_bounds=None) -> dict:
+        sc = self._build_sector_constraints(sectors or {}, sector_bounds or {})
+        return self._optimize("max_sharpe", bounds, extra_constraints=sc)
 
-    def min_volatility(self, bounds=None) -> dict:
-        """Find the minimum-volatility portfolio."""
-        return self._optimize("min_volatility", bounds)
+    def min_volatility(self, bounds=None, sectors=None, sector_bounds=None) -> dict:
+        sc = self._build_sector_constraints(sectors or {}, sector_bounds or {})
+        return self._optimize("min_volatility", bounds, extra_constraints=sc)
 
-    def max_return(self, bounds=None) -> dict:
-        """Find the maximum-return portfolio."""
-        return self._optimize("max_return", bounds)
+    def max_return(self, bounds=None, sectors=None, sector_bounds=None) -> dict:
+        sc = self._build_sector_constraints(sectors or {}, sector_bounds or {})
+        return self._optimize("max_return", bounds, extra_constraints=sc)
 
     def equal_weight(self) -> dict:
-        """Equal-weight benchmark portfolio (1/n)."""
         n = len(self.tickers)
         weights = np.ones(n) / n
         ret = self._portfolio_return(weights)
@@ -170,33 +244,150 @@ class PortfolioOptimizer:
         }
 
     def risk_parity(self, bounds=None) -> dict:
-        """
-        Risk Parity: equalize each asset's contribution to total risk.
-        Minimizes: Σ_i (RC_i − σ_p/n)²  where RC_i = w_i·(Σw)_i / σ_p
-        """
         n = len(self.tickers)
         target_rc = 1.0 / n
         cov = self.cov_matrix.values
 
-        def risk_parity_objective(w):
+        def rp_obj(w):
             w = np.maximum(w, 1e-10)
-            port_vol = np.sqrt(w @ cov @ w)
-            marginal = cov @ w
-            risk_contrib = w * marginal / port_vol
-            # risk contributions should each equal target_rc of total vol
-            return np.sum((risk_contrib - target_rc * port_vol) ** 2)
+            pv = np.sqrt(w @ cov @ w)
+            mc = cov @ w
+            rc = w * mc / pv
+            return np.sum((rc - target_rc * pv) ** 2)
 
         x0 = np.ones(n) / n
         bnd = self._make_bounds(n, bounds)
-        constraints = [{"type": "eq", "fun": self._weight_constraint}]
-
         result = minimize(
-            risk_parity_objective, x0, method="SLSQP",
-            bounds=bnd, constraints=constraints,
+            rp_obj, x0, method="SLSQP", bounds=bnd,
+            constraints=[{"type": "eq", "fun": self._weight_constraint}],
             options={"ftol": 1e-12, "maxiter": 1000},
         )
+        weights = np.maximum(result.x, 0)
+        weights /= weights.sum()
+        ret = self._portfolio_return(weights)
+        vol = self._portfolio_volatility(weights)
+        return {
+            "weights": weights.tolist(),
+            "return": ret,
+            "volatility": vol,
+            "sharpe": (ret - self.risk_free_rate) / vol if vol > 0 else 0.0,
+        }
 
-        weights = result.x
+    # ── Black-Litterman ──────────────────────────────────────────
+
+    def black_litterman(
+        self,
+        views: list[dict],
+        confidences: list[float] = None,
+        tau: float = 0.05,
+        bounds=None,
+        sectors=None,
+        sector_bounds=None,
+    ) -> dict:
+        """
+        Black-Litterman model.
+
+        Args:
+            views: list of {ticker: str, expected_return: float} (absolute views)
+            confidences: per-view confidence 0–1 (default: 0.5 each)
+            tau: scaling factor for uncertainty in equilibrium (default 0.05)
+        """
+        n = len(self.tickers)
+        cov = self.cov_matrix.values
+
+        # Market-cap implied equilibrium returns (use equal-weight as proxy)
+        delta = 2.5  # risk aversion coefficient
+        w_mkt = np.ones(n) / n
+        pi = delta * cov @ w_mkt  # equilibrium excess returns
+
+        if not views:
+            # No views → just optimize on equilibrium returns
+            sc = self._build_sector_constraints(sectors or {}, sector_bounds or {})
+            return self._optimize("max_sharpe", bounds, mu=pi, extra_constraints=sc)
+
+        # Build P (pick matrix) and Q (view returns)
+        k = len(views)
+        P = np.zeros((k, n))
+        Q = np.zeros(k)
+        if confidences is None:
+            confidences = [0.5] * k
+
+        ticker_idx = {t: i for i, t in enumerate(self.tickers)}
+        for j, view in enumerate(views):
+            t = view.get("ticker", "")
+            if t in ticker_idx:
+                P[j, ticker_idx[t]] = 1.0
+                Q[j] = view["expected_return"]
+
+        # Omega: diagonal uncertainty matrix (lower confidence → higher variance)
+        omega_diag = np.array([
+            tau * (P[j] @ cov @ P[j].T) / max(c, 0.01)
+            for j, c in enumerate(confidences)
+        ])
+        Omega = np.diag(omega_diag)
+
+        # Black-Litterman posterior expected returns
+        tau_cov = tau * cov
+        tau_cov_inv = np.linalg.inv(tau_cov)
+        Omega_inv = np.linalg.inv(Omega)
+
+        posterior_mu = np.linalg.inv(tau_cov_inv + P.T @ Omega_inv @ P) @ \
+                       (tau_cov_inv @ pi + P.T @ Omega_inv @ Q)
+
+        # Optimize using posterior expected returns
+        sc = self._build_sector_constraints(sectors or {}, sector_bounds or {})
+        return self._optimize("max_sharpe", bounds, mu=posterior_mu, extra_constraints=sc)
+
+    # ── Hierarchical Risk Parity ─────────────────────────────────
+
+    def hrp(self) -> dict:
+        """
+        Hierarchical Risk Parity allocation.
+        Uses correlation-based clustering and inverse-variance weighting.
+        """
+        corr = self.daily_returns.corr().values
+        cov = self.cov_matrix.values
+        n = len(self.tickers)
+
+        # 1. Correlation distance matrix
+        dist = np.sqrt(0.5 * (1 - corr))
+        np.fill_diagonal(dist, 0)
+        condensed = squareform(dist)
+        link = linkage(condensed, method="single")
+
+        # 2. Quasi-diagonalize
+        sort_ix = list(leaves_list(link))
+
+        # 3. Recursive bisection
+        weights = np.ones(n)
+
+        def _bisect(indices):
+            if len(indices) <= 1:
+                return
+            mid = len(indices) // 2
+            left = indices[:mid]
+            right = indices[mid:]
+
+            # Cluster variance (inverse-variance weighting)
+            def _cluster_var(idx):
+                sub_cov = cov[np.ix_(idx, idx)]
+                inv_diag = 1.0 / np.diag(sub_cov)
+                w = inv_diag / inv_diag.sum()
+                return w @ sub_cov @ w
+
+            v_left = _cluster_var(left)
+            v_right = _cluster_var(right)
+
+            alpha = 1 - v_left / (v_left + v_right)
+            for i in left:
+                weights[i] *= alpha
+            for i in right:
+                weights[i] *= (1 - alpha)
+
+            _bisect(left)
+            _bisect(right)
+
+        _bisect(sort_ix)
         weights = np.maximum(weights, 0)
         weights /= weights.sum()
 
@@ -209,45 +400,56 @@ class PortfolioOptimizer:
             "sharpe": (ret - self.risk_free_rate) / vol if vol > 0 else 0.0,
         }
 
-    def get_all_strategies(self, bounds=None) -> dict:
-        """Run all optimization strategies and return results."""
-        return {
-            "max_sharpe": self.max_sharpe(bounds),
-            "min_volatility": self.min_volatility(bounds),
+    # ── Get all strategies ───────────────────────────────────────
+
+    def get_all_strategies(
+        self,
+        bounds=None,
+        views=None,
+        confidences=None,
+        sectors=None,
+        sector_bounds=None,
+    ) -> dict:
+        self._progress("optimizing", "Running optimization strategies...")
+        result = {
+            "max_sharpe": self.max_sharpe(bounds, sectors, sector_bounds),
+            "min_volatility": self.min_volatility(bounds, sectors, sector_bounds),
             "risk_parity": self.risk_parity(bounds),
             "equal_weight": self.equal_weight(),
-            "max_return": self.max_return(bounds),
+            "max_return": self.max_return(bounds, sectors, sector_bounds),
+            "hrp": self.hrp(),
         }
+        if views:
+            result["black_litterman"] = self.black_litterman(
+                views, confidences, bounds=bounds,
+                sectors=sectors, sector_bounds=sector_bounds,
+            )
+        return result
 
-    # ── Performance metrics ──────────────────────────────────────────
+    # ── Performance metrics ──────────────────────────────────────
 
-    def compute_metrics(self, weights: np.ndarray | list) -> dict:
-        """
-        Compute performance metrics for a given weight allocation.
-        Returns: annual_return, annual_volatility, sharpe, sortino,
-                 max_drawdown, calmar.
-        """
+    def compute_metrics(self, weights, cost_bps: float = 0) -> dict:
+        """Compute performance metrics with optional transaction cost."""
         w = np.array(weights)
         portfolio_daily = (self.daily_returns * w).sum(axis=1)
 
+        # Apply simple cost drag if provided
+        if cost_bps > 0:
+            daily_cost = (cost_bps / 10000) / self.TRADING_DAYS
+            portfolio_daily = portfolio_daily - daily_cost
+
         ann_return = float(portfolio_daily.mean() * self.TRADING_DAYS)
         ann_vol = float(portfolio_daily.std() * np.sqrt(self.TRADING_DAYS))
-
-        # Sharpe
         sharpe = (ann_return - self.risk_free_rate) / ann_vol if ann_vol > 0 else 0.0
 
-        # Sortino (downside deviation)
         downside = portfolio_daily[portfolio_daily < 0]
         downside_std = float(downside.std() * np.sqrt(self.TRADING_DAYS)) if len(downside) > 0 else 0.0
         sortino = (ann_return - self.risk_free_rate) / downside_std if downside_std > 0 else 0.0
 
-        # Max drawdown
         cum = (1 + portfolio_daily).cumprod()
         running_max = cum.cummax()
         drawdowns = (cum - running_max) / running_max
         max_dd = float(drawdowns.min())
-
-        # Calmar
         calmar = ann_return / abs(max_dd) if abs(max_dd) > 1e-10 else 0.0
 
         return {
@@ -259,10 +461,131 @@ class PortfolioOptimizer:
             "calmar": round(calmar, 4),
         }
 
-    # ── Legacy compat ────────────────────────────────────────────────
+    # ── Growth of $10K ───────────────────────────────────────────
+
+    def growth_of_10k(self, weights, cost_bps: float = 0) -> dict:
+        """Cumulative $10K growth for a given allocation."""
+        w = np.array(weights)
+        portfolio_daily = (self.daily_returns * w).sum(axis=1)
+        if cost_bps > 0:
+            daily_cost = (cost_bps / 10000) / self.TRADING_DAYS
+            portfolio_daily = portfolio_daily - daily_cost
+
+        cum = (1 + portfolio_daily).cumprod() * 10000
+        dates = [d.strftime("%Y-%m-%d") for d in cum.index]
+        return {"dates": dates, "values": cum.tolist()}
+
+    # ── Rebalancing backtest ─────────────────────────────────────
+
+    def backtest(
+        self,
+        weights: list[float],
+        rebalance_freq: str = "quarterly",
+        cost_bps: float = 0,
+    ) -> dict:
+        """
+        Walk-forward backtest with periodic rebalancing and transaction costs.
+        Returns cumulative values, drawdown, and rolling Sharpe.
+        """
+        w_target = np.array(weights)
+        daily_ret = self.daily_returns.values
+        dates = self.daily_returns.index
+        n_days = len(dates)
+        n_assets = len(self.tickers)
+
+        # Map rebalance frequency
+        freq_map = {"monthly": "ME", "quarterly": "QE", "yearly": "YE"}
+        pd_freq = freq_map.get(rebalance_freq, "QE")
+
+        rebal_dates = set(
+            pd.Series(dates, index=dates).groupby(pd.Grouper(freq=pd_freq)).last().dropna().values
+        )
+
+        portfolio_value = 10000.0
+        current_weights = w_target.copy()
+        values = [portfolio_value]
+        total_cost = 0.0
+
+        for i in range(n_days):
+            # Daily return
+            day_ret = daily_ret[i]
+            port_ret = np.dot(current_weights, day_ret)
+            portfolio_value *= (1 + port_ret)
+
+            # Update weights (drift)
+            current_weights = current_weights * (1 + day_ret)
+            w_sum = current_weights.sum()
+            if w_sum > 0:
+                current_weights /= w_sum
+
+            # Rebalance check
+            if dates[i] in rebal_dates and i < n_days - 1:
+                turnover = np.sum(np.abs(current_weights - w_target))
+                cost = portfolio_value * turnover * (cost_bps / 10000)
+                portfolio_value -= cost
+                total_cost += cost
+                current_weights = w_target.copy()
+
+            values.append(portfolio_value)
+
+        values = values[1:]  # align with dates
+        values_series = pd.Series(values, index=dates)
+
+        # Drawdown
+        running_max = values_series.cummax()
+        drawdown = ((values_series - running_max) / running_max).tolist()
+
+        # Rolling Sharpe (63-day ≈ quarterly)
+        daily_rets = values_series.pct_change().dropna()
+        rolling_sharpe_series = (
+            daily_rets.rolling(63).mean() / daily_rets.rolling(63).std()
+        ) * np.sqrt(self.TRADING_DAYS)
+        rolling_sharpe = rolling_sharpe_series.fillna(0).tolist()
+        # Pad front to match length
+        rolling_sharpe = [0.0] * (len(values) - len(rolling_sharpe)) + rolling_sharpe
+
+        date_strs = [d.strftime("%Y-%m-%d") for d in dates]
+        return {
+            "dates": date_strs,
+            "cumulative": values,
+            "drawdown": drawdown,
+            "rolling_sharpe": rolling_sharpe,
+            "total_cost": round(total_cost, 2),
+        }
+
+    # ── Correlation matrix ───────────────────────────────────────
+
+    def get_correlation_matrix(self) -> dict:
+        corr = self.daily_returns.corr()
+        return {
+            "tickers": self.tickers,
+            "matrix": corr.values.tolist(),
+        }
+
+    # ── Individual asset analytics ───────────────────────────────
+
+    def get_asset_analytics(self) -> dict:
+        result = {}
+        for t in self.tickers:
+            rets = self.daily_returns[t]
+            ann_ret = float(rets.mean() * self.TRADING_DAYS)
+            ann_vol = float(rets.std() * np.sqrt(self.TRADING_DAYS))
+            sharpe = (ann_ret - self.risk_free_rate) / ann_vol if ann_vol > 0 else 0.0
+            prices = self.data[t]
+            result[t] = {
+                "return": round(ann_ret, 6),
+                "volatility": round(ann_vol, 6),
+                "sharpe": round(sharpe, 4),
+                "prices": {
+                    "dates": [d.strftime("%Y-%m-%d") for d in prices.index],
+                    "values": prices.tolist(),
+                },
+            }
+        return result
+
+    # ── Legacy compat ────────────────────────────────────────────
 
     def get_optimal_portfolios(self, results: dict) -> dict:
-        """Legacy method: find best portfolios from simulation results."""
         max_sharpe_idx = int(np.argmax(results["sharpe"]))
         min_vol_idx = int(np.argmin(results["volatility"]))
         return {
