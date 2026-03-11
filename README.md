@@ -1,64 +1,100 @@
-
 # Smart Portfolio Optimizer
 
-**What is this project about?**
+A **full-stack portfolio optimization platform** built with Modern Portfolio Theory (MPT). Fetches real stock data, runs multiple optimization strategies, and visualizes results through a premium interactive web dashboard.
 
-This project is a Smart Portfolio Optimizer that helps investors find the best mix of stocks using Modern Portfolio Theory (MPT). It fetches historical stock data, simulates thousands of portfolios, and identifies the ones with the best risk-return tradeoff. The tool visualizes the efficient frontier and highlights optimal portfolios, making it easy to see how to maximize returns for a given level of risk.
+<p align="center">
+  <img src="docs/dashboard.png" alt="Dashboard Preview" width="800">
+</p>
 
-**Developer/Creator:** tubakhxn
+## ✨ Features
 
-## Features
-- Fetches historical stock data using yfinance
-- Calculates expected returns, covariance matrix, portfolio volatility, Sharpe ratio
-- Generates 10,000+ random portfolios
-- Identifies maximum Sharpe ratio and minimum volatility portfolios
-- Visualizes efficient frontier and portfolio scatter plot
-- Highlights optimal portfolios
+### Optimization Strategies
+| Strategy | Description |
+|----------|-------------|
+| 📈 **Max Sharpe Ratio** | Maximize risk-adjusted return |
+| 🛡️ **Min Volatility** | Minimize portfolio risk |
+| ⚖️ **Risk Parity** | Equalize each asset's risk contribution |
+| 📊 **Equal Weight** | Benchmark 1/n allocation |
+| 🚀 **Max Return** | Maximize expected return (aggressive) |
 
-## Structure
-- main.py: Entry point for running the optimizer and visualizations
-- optimizer.py: Contains portfolio optimization logic and calculations
-- requirements.txt: Lists required Python packages
-- README.md: Explains MPT math and project usage
+### Performance Metrics
+- **Sharpe Ratio** — risk-adjusted return
+- **Sortino Ratio** — downside-risk-adjusted return
+- **Max Drawdown** — largest peak-to-trough decline
+- **Calmar Ratio** — return vs. max drawdown
 
-## Modern Portfolio Theory (MPT) Math
-
-Modern Portfolio Theory aims to maximize portfolio return for a given level of risk, or minimize risk for a given level of expected return. Key concepts:
-
-- **Expected Returns ($\mu$):**
-  $$\mu = \frac{1}{N} \sum_{i=1}^{N} r_i$$
-  Where $r_i$ is the return for period $i$.
-
-- **Covariance Matrix ($\Sigma$):**
-  $$\Sigma_{ij} = \text{Cov}(r_i, r_j)$$
-  Measures how returns of assets move together.
-
-- **Portfolio Volatility ($\sigma_p$):**
-  $$\sigma_p = \sqrt{w^T \Sigma w}$$
-  Where $w$ is the vector of asset weights.
-
-- **Sharpe Ratio ($S$):**
-  $$S = \frac{\mu_p - r_f}{\sigma_p}$$
-  Where $\mu_p$ is portfolio expected return, $r_f$ is risk-free rate, $\sigma_p$ is portfolio volatility.
-
-- **Efficient Frontier:**
-  The set of portfolios offering the highest expected return for a given risk.
-
-## Usage
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. Run the optimizer:
-   ```bash
-   python main.py
-   ```
-
-## Clean Finance-Style Visualization
-- Efficient frontier plotted
-- Portfolios colored by Sharpe ratio
-- Optimal portfolios highlighted
+### Interactive Dashboard
+- 🎨 Premium dark-mode glassmorphism UI
+- 📊 Interactive Plotly.js efficient frontier chart
+- 🍩 Donut weight allocation charts per strategy
+- 📋 Side-by-side strategy comparison cards
+- 🎚️ Configurable tickers, dates, risk-free rate, and simulation count
 
 ---
 
-For more details on MPT, see [Wikipedia](https://en.wikipedia.org/wiki/Modern_portfolio_theory).
+## 🚀 Quick Start
+
+### Prerequisites
+- Python 3.10+
+- pip
+
+### Installation
+
+```bash
+git clone https://github.com/AlessandroGCodeca/Smart-Portfolio-Optimizer.git
+cd Smart-Portfolio-Optimizer
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### Run the Web Dashboard
+
+```bash
+python app.py
+# → Open http://localhost:5000
+```
+
+### Run CLI Mode
+
+```bash
+python main.py
+```
+
+---
+
+## 🏗️ Project Structure
+
+```
+Smart-Portfolio-Optimizer/
+├── optimizer.py          # Core optimization engine (MPT + scipy)
+├── app.py                # Flask API server
+├── main.py               # CLI entry point
+├── requirements.txt      # Python dependencies
+├── templates/
+│   └── index.html        # Dashboard HTML
+└── static/
+    ├── css/
+    │   └── style.css     # Dark-mode theme
+    └── js/
+        └── app.js        # Frontend logic + Plotly.js charts
+```
+
+## 📐 Modern Portfolio Theory Math
+
+| Concept | Formula |
+|---------|---------|
+| Expected Return | $\mu = \frac{1}{N} \sum_{i=1}^{N} r_i$ |
+| Portfolio Volatility | $\sigma_p = \sqrt{w^T \Sigma w}$ |
+| Sharpe Ratio | $S = \frac{\mu_p - r_f}{\sigma_p}$ |
+| Risk Parity | $RC_i = w_i \cdot (\Sigma w)_i / \sigma_p = \sigma_p / n$ |
+
+## 🛠️ Tech Stack
+
+- **Backend:** Python, Flask, NumPy, Pandas, SciPy, yfinance
+- **Frontend:** HTML5, CSS3, JavaScript, Plotly.js
+- **Data Source:** Yahoo Finance (via yfinance)
+
+## 📄 License
+
+MIT License — see [LICENSE](LICENSE) for details.
