@@ -15,6 +15,7 @@ from scipy.optimize import minimize
 from scipy.cluster.hierarchy import linkage, leaves_list
 from scipy.spatial.distance import squareform
 from typing import Optional
+import statsmodels.api as sm
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -49,6 +50,34 @@ class DataCache:
         path = os.path.join(cls.CACHE_DIR, f"{cls._key(tickers, start, end)}.pkl")
         with open(path, "wb") as f:
             pickle.dump(data, f)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Fama-French Data Cache
+# ═══════════════════════════════════════════════════════════════════
+
+class FFCache:
+    """File-based cache for Fama-French factor data."""
+    CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "portfolio_optimizer", "ff")
+    
+    @classmethod
+    def get(cls, dataset: str, start: str, end: str) -> Optional[pd.DataFrame]:
+        key = hashlib.md5(f"{dataset}|{start}|{end}".encode()).hexdigest()
+        os.makedirs(cls.CACHE_DIR, exist_ok=True)
+        path = os.path.join(cls.CACHE_DIR, f"{key}.pkl")
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                return pickle.load(f)
+        return None
+
+    @classmethod
+    def put(cls, dataset: str, start: str, end: str, data: pd.DataFrame):
+        key = hashlib.md5(f"{dataset}|{start}|{end}".encode()).hexdigest()
+        os.makedirs(cls.CACHE_DIR, exist_ok=True)
+        path = os.path.join(cls.CACHE_DIR, f"{key}.pkl")
+        with open(path, "wb") as f:
+            pickle.dump(data, f)
+
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -452,6 +481,11 @@ class PortfolioOptimizer:
         max_dd = float(drawdowns.min())
         calmar = ann_return / abs(max_dd) if abs(max_dd) > 1e-10 else 0.0
 
+        # Historical VaR and CVaR (95% confidence)
+        var_95 = float(np.percentile(portfolio_daily, 5))
+        tail_returns = portfolio_daily[portfolio_daily <= var_95]
+        cvar_95 = float(tail_returns.mean()) if len(tail_returns) > 0 else var_95
+
         return {
             "annual_return": round(ann_return, 6),
             "annual_volatility": round(ann_vol, 6),
@@ -459,6 +493,8 @@ class PortfolioOptimizer:
             "sortino": round(sortino, 4),
             "max_drawdown": round(max_dd, 4),
             "calmar": round(calmar, 4),
+            "var_95": round(var_95, 6),
+            "cvar_95": round(cvar_95, 6),
         }
 
     # ── Growth of $10K ───────────────────────────────────────────
@@ -602,3 +638,100 @@ class PortfolioOptimizer:
                 "weights": results["weights"][min_vol_idx],
             },
         }
+
+    # ── Advanced Risk & Wealth Forecasting ───────────────────────
+
+    def wealth_forecast(self, weights: list[float], years: int = 10, initial_capital: float = 10000, num_paths: int = 1000) -> dict:
+        """
+        Monte Carlo Wealth Forecasting using Geometric Brownian Motion (GBM).
+        Returns 10th, 50th, and 90th percentile projected wealth paths.
+        """
+        w = np.array(weights)
+        port_ret = (self.daily_returns * w).sum(axis=1)
+        
+        mu = port_ret.mean() * self.TRADING_DAYS
+        sigma = port_ret.std() * np.sqrt(self.TRADING_DAYS)
+        
+        dt = 1 / self.TRADING_DAYS
+        n_steps = int(years * self.TRADING_DAYS)
+        
+        # GBM paths: log-normal simulation
+        drift = (mu - 0.5 * sigma**2) * dt
+        shock = sigma * np.sqrt(dt) * np.random.normal(size=(n_steps, num_paths))
+        returns = np.exp(drift + shock)
+        paths = np.vstack([np.ones(num_paths), returns]).cumprod(axis=0) * initial_capital
+        
+        # Percentiles across simulated paths over time
+        p10 = np.percentile(paths, 10, axis=1)
+        p50 = np.percentile(paths, 50, axis=1)
+        p90 = np.percentile(paths, 90, axis=1)
+        
+        # Generate future business dates for x-axis
+        last_date = self.daily_returns.index[-1]
+        future_dates = pd.bdate_range(start=last_date, periods=n_steps+1)
+        date_strs = [d.strftime("%Y-%m-%d") for d in future_dates]
+        
+        return {
+            "dates": date_strs,
+            "p10": p10.tolist(),
+            "p50": p50.tolist(),
+            "p90": p90.tolist()
+        }
+
+    # ── Factor Analysis (Fama-French) ────────────────────────────
+
+    def factor_analysis(self, weights: list[float]) -> dict:
+        """
+        Decompose portfolio returns using the Fama-French 3-Factor model.
+        Requires network connection to fetch from Kenneth French data library via pandas_datareader.
+        """
+        w = np.array(weights)
+        port_ret = (self.daily_returns * w).sum(axis=1)
+        
+        start = port_ret.index[0].strftime("%Y-%m-%d")
+        end = port_ret.index[-1].strftime("%Y-%m-%d")
+        
+        # Fetch from cache or download from Fama-French
+        ff = FFCache.get("F-F_Research_Data_Factors_daily", start, end)
+        if ff is None:
+            self._progress("downloading", "Fetching Fama-French 3-Factor data...")
+            try:
+                url = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_Factors_daily_CSV.zip"
+                df_ff = pd.read_csv(url, skiprows=4, index_col=0)
+                # Ensure the index is treated as string before parsing (handles NaN noise at the bottom of the CSV)
+                df_ff.index = pd.to_datetime(df_ff.index.astype(str), format='%Y%m%d', errors='coerce')
+                df_ff = df_ff.dropna()
+                ff = df_ff / 100.0  # FF data is provided as percentages (e.g., 1.5 instead of 0.015)
+                
+                FFCache.put("F-F_Research_Data_Factors_daily", start, end, ff)
+            except Exception as e:
+                return {"error": f"Failed to fetch factor data: {str(e)}"}
+        
+        # Align port_ret and FF data on overlapping dates
+        aligned = pd.concat([port_ret.rename("Port"), ff], axis=1).dropna()
+        if len(aligned) < 30:
+            return {"error": "Not enough overlapping data for factor analysis (need at least 30 days)."}
+            
+        y = aligned["Port"] - aligned["RF"]
+        # Standard 3 factors
+        cols = [c for c in aligned.columns if c in ["Mkt-RF", "SMB", "HML"]]
+        if not cols:
+            return {"error": "Could not extract standard Fama-French columns."}
+            
+        X = aligned[cols]
+        X = sm.add_constant(X)
+        
+        # OLS Regression
+        model = sm.OLS(y, X).fit()
+        
+        exposures = {}
+        for factor in cols:
+            exposures[factor] = round(model.params.get(factor, 0.0), 3)
+            
+        return {
+            "r_squared": round(model.rsquared, 3),
+            "alpha_annualized": round(model.params.get("const", 0.0) * self.TRADING_DAYS, 4),
+            "exposures": exposures,
+            "pvalues": {f: round(model.pvalues.get(f, 1.0), 3) for f in cols}
+        }
+

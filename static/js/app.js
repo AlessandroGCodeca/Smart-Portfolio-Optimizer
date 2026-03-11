@@ -50,6 +50,7 @@ const resultsContainer = $('results-container');
 // ── State ──────────────────────────────────────────────────────
 let tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META'];
 let sectorMap = {};  // {ticker: sector}
+let lastResultData = null; // Store latest optimization results
 
 // ── Ticker Pills ───────────────────────────────────────────────
 function renderPills() {
@@ -307,7 +308,11 @@ async function runOptimization() {
 
 // ── Render Results ─────────────────────────────────────────────
 function renderResults(data) {
+    lastResultData = data;
     resultsContainer.style.display = 'block';
+
+    // Populate advanced dropdowns
+    populateStrategyDropdowns(data);
 
     // Frontier tab
     renderFrontierChart(data);
@@ -418,7 +423,9 @@ function renderMetricsTable(data) {
             <td class="metric-mono">${m.sharpe.toFixed(3)}</td>
             <td class="metric-mono">${m.sortino.toFixed(3)}</td>
             <td class="metric-mono metric-negative">${(m.max_drawdown*100).toFixed(1)}%</td>
-            <td class="metric-mono">${m.calmar.toFixed(3)}</td>`;
+            <td class="metric-mono">${m.calmar.toFixed(3)}</td>
+            <td class="metric-mono metric-negative">${m.var_95 !== undefined ? (m.var_95*100).toFixed(2) + '%' : 'N/A'}</td>
+            <td class="metric-mono metric-negative">${m.cvar_95 !== undefined ? (m.cvar_95*100).toFixed(2) + '%' : 'N/A'}</td>`;
         body.appendChild(row);
     });
 }
@@ -555,6 +562,139 @@ function renderBacktestCharts(data) {
         legend: { bgcolor: 'rgba(0,0,0,0)', font: { size: 11, color: '#94a3b8' } },
         margin: { t: 20, r: 30, b: 60, l: 60 }, hovermode: 'x unified',
         shapes: [{ type: 'line', y0: 0, y1: 0, x0: 0, x1: 1, xref: 'paper', line: { color: 'rgba(255,255,255,0.15)', width: 1, dash: 'dash' } }],
+    }, PLOTLY_CONFIG);
+}
+
+// ── New Features (Forecast & Factors) ────────────────────────
+function populateStrategyDropdowns(data) {
+    const forecastSelect = $('forecast-strategy');
+    const factorSelect = $('factor-strategy');
+    if (!forecastSelect || !factorSelect) return;
+    
+    forecastSelect.innerHTML = '';
+    factorSelect.innerHTML = '';
+    
+    Object.keys(data.strategies).forEach(key => {
+        const meta = STRATEGIES[key];
+        if (!meta) return;
+        const opt = `<option value="${key}">${meta.label}</option>`;
+        forecastSelect.innerHTML += opt;
+        factorSelect.innerHTML += opt;
+    });
+}
+
+const btnRunForecast = $('btn-run-forecast');
+if (btnRunForecast) {
+    btnRunForecast.addEventListener('click', async () => {
+        if (!lastResultData) return;
+        const key = $('forecast-strategy').value;
+        const years = parseInt($('forecast-years').value);
+        const strat = lastResultData.strategies[key];
+        
+        btnRunForecast.disabled = true;
+        btnRunForecast.textContent = 'Simulating...';
+        try {
+            const payload = {
+                tickers: lastResultData.tickers,
+                start_date: startDate.value,
+                end_date: endDate.value,
+                weights: strat.weights,
+                years: years
+            };
+            const res = await fetch('/api/forecast', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+            });
+            const forecastData = await res.json();
+            if(!res.ok) throw new Error(forecastData.error);
+            renderForecastChart(forecastData, key);
+        } catch(err) {
+            alert("Forecast Error: " + err.message);
+        } finally {
+            btnRunForecast.disabled = false;
+            btnRunForecast.textContent = 'Simulate';
+        }
+    });
+}
+
+const btnRunFactors = $('btn-run-factors');
+if (btnRunFactors) {
+    btnRunFactors.addEventListener('click', async () => {
+        if (!lastResultData) return;
+        const key = $('factor-strategy').value;
+        const strat = lastResultData.strategies[key];
+        
+        btnRunFactors.disabled = true;
+        btnRunFactors.textContent = 'Analyzing...';
+        try {
+            const payload = {
+                tickers: lastResultData.tickers,
+                start_date: startDate.value,
+                end_date: endDate.value,
+                weights: strat.weights
+            };
+            const res = await fetch('/api/factors', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+            });
+            const factorData = await res.json();
+            if(!res.ok) throw new Error(factorData.error);
+            renderFactorChart(factorData, key);
+        } catch(err) {
+            alert("Factor Analysis Error: " + err.message);
+        } finally {
+            btnRunFactors.disabled = false;
+            btnRunFactors.textContent = 'Analyze';
+        }
+    });
+}
+
+function renderForecastChart(data, key) {
+    const meta = STRATEGIES[key] || {color: '#6366f1'};
+    const traces = [
+        {
+            x: data.dates, y: data.p10, type: 'scatter', mode: 'lines',
+            line: {width: 0}, hoverinfo: 'skip', showlegend: false
+        },
+        {
+            x: data.dates, y: data.p90, type: 'scatter', mode: 'lines',
+            fill: 'tonexty', fillcolor: Object.assign({}, meta).colorBg || 'rgba(99,102,241,0.15)',
+            line: {width: 0}, hoverinfo: 'skip', name: '10th-90th Pct'
+        },
+        {
+            x: data.dates, y: data.p50, type: 'scatter', mode: 'lines',
+            line: {color: meta.color, width: 2.5},
+            name: 'Median (50th)',
+            hovertemplate: '<b>%{x}</b><br>Median: $%{y:,.0f}<extra></extra>'
+        }
+    ];
+
+    Plotly.newPlot($('forecast-chart'), traces, {
+        ...PLOTLY_THEME,
+        xaxis: { ...PLOTLY_THEME.xaxis, title: { text: 'Date', font: { size: 13 } } },
+        yaxis: { ...PLOTLY_THEME.yaxis, title: { text: 'Wealth ($)', font: { size: 13 } }, tickprefix: '$', tickformat: ',.0f' },
+        legend: { bgcolor: 'rgba(0,0,0,0)', font: { size: 11, color: '#94a3b8' } },
+        margin: { t: 20, r: 30, b: 60, l: 70 }, hovermode: 'x unified',
+    }, PLOTLY_CONFIG);
+}
+
+function renderFactorChart(data, key) {
+    const meta = STRATEGIES[key] || {color: '#6366f1'};
+    const factors = data.exposures;
+    const names = Object.keys(factors);
+    const vals = Object.values(factors);
+    const colors = vals.map(v => v >= 0 ? '#22c55e' : '#ef4444');
+
+    const trace = {
+        y: names, x: vals, type: 'bar', orientation: 'h',
+        marker: {color: colors, line: { width: 0 }},
+        hovertemplate: '<b>%{y}</b>: %{x:.2f}<extra></extra>'
+    };
+
+    Plotly.newPlot($('factor-chart'), [trace], {
+        ...PLOTLY_THEME,
+        title: { text: `Annualized Alpha: ${(data.alpha_annualized*100).toFixed(2)}% | R²: ${data.r_squared.toFixed(2)}`, font: { size: 13, color: '#94a3b8' }, y: 0.95 },
+        xaxis: { ...PLOTLY_THEME.xaxis, title: { text: 'Factor Exposure (Beta)', font: { size: 12 } } },
+        yaxis: { ...PLOTLY_THEME.yaxis, autorange: 'reversed' },
+        margin: { t: 40, r: 30, b: 50, l: 80 },
     }, PLOTLY_CONFIG);
 }
 

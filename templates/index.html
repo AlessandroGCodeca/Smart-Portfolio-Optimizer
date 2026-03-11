@@ -170,6 +170,7 @@
                 <button class="tab-btn active" data-tab="tab-frontier">Frontier</button>
                 <button class="tab-btn" data-tab="tab-performance">Performance</button>
                 <button class="tab-btn" data-tab="tab-analysis">Analysis</button>
+                <button class="tab-btn" data-tab="tab-forecast">Forecast</button>
                 <button class="tab-btn" data-tab="tab-backtest">Backtest</button>
             </nav>
 
@@ -198,6 +199,8 @@
                                     <th>Sortino</th>
                                     <th>Max Drawdown</th>
                                     <th>Calmar</th>
+                                    <th>VaR (95%)</th>
+                                    <th>CVaR (95%)</th>
                                 </tr>
                             </thead>
                             <tbody id="metrics-body"></tbody>
@@ -221,9 +224,44 @@
                     <div id="correlation-heatmap"></div>
                 </section>
 
+                <section class="glass-panel">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                        <h2 class="section-title" style="margin-bottom: 0;">Fama-French Factor Exposures</h2>
+                        <div style="display: flex; gap: 10px; align-items: center;">
+                            <label style="color: var(--text-muted); font-size: 0.85rem;">Strategy: 
+                                <select id="factor-strategy" style="padding: 4px; width: 140px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;"></select>
+                            </label>
+                            <button id="btn-run-factors" class="btn-secondary btn-small">Analyze</button>
+                        </div>
+                    </div>
+                    <div id="factor-chart" style="height: 350px;"></div>
+                </section>
+
                 <section id="assets-section">
                     <h2 class="section-title">Individual Assets</h2>
                     <div id="asset-cards" class="asset-grid"></div>
+                </section>
+            </div>
+
+            <!-- TAB: Forecast -->
+            <div id="tab-forecast" class="tab-content">
+                <section class="glass-panel">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                        <h2 class="section-title" style="margin-bottom: 0;">Monte Carlo Wealth Forecast</h2>
+                        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                            <label style="color: var(--text-muted); font-size: 0.85rem;">Strategy: 
+                                <select id="forecast-strategy" style="padding: 4px; width: 140px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;"></select>
+                            </label>
+                            <label style="color: var(--text-muted); font-size: 0.85rem;">Years: 
+                                <input type="number" id="forecast-years" value="10" min="1" max="30" style="width: 60px; padding: 4px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); color: #fff; border-radius: 4px;">
+                            </label>
+                            <button id="btn-run-forecast" class="btn-secondary btn-small">Simulate</button>
+                        </div>
+                    </div>
+                    <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: -10px; margin-bottom: 16px;">
+                        Projects initial $10,000 capital using Geometric Brownian Motion based on Expected Return and Volatility. Shows 10th, 50th, and 90th percentiles across 1,000 simulation paths.
+                    </p>
+                    <div id="forecast-chart" style="height: 450px;"></div>
                 </section>
             </div>
 

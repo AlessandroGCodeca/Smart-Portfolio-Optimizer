@@ -6,3 +6,5 @@ scipy
 flask
 flask-cors
 pytest
+statsmodels
+pandas-datareader

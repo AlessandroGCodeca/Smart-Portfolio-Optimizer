@@ -38,6 +38,55 @@ def optimize():
         return jsonify({"error": str(e)}), 500
 
 
+# ── Wealth Forecasting ──────────────────────────────────────────
+
+@app.route("/api/forecast", methods=["POST"])
+def forecast():
+    """Monte Carlo Wealth Forecasting for a specific allocation."""
+    try:
+        data = request.get_json()
+        tickers = data.get("tickers", [])
+        start_date = data.get("start_date", "2020-01-01")
+        end_date = data.get("end_date", "2025-01-01")
+        weights = data.get("weights")
+        years = int(data.get("years", 10))
+        initial_capital = float(data.get("initial_capital", 10000))
+        num_paths = int(data.get("num_paths", 1000))
+
+        if not weights or not tickers:
+            return jsonify({"error": "Missing weights or tickers."}), 400
+
+        optimizer = PortfolioOptimizer(tickers, start_date, end_date)
+        result = optimizer.wealth_forecast(weights, years, initial_capital, num_paths)
+        return jsonify(result)
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Factor Analysis ─────────────────────────────────────────────
+
+@app.route("/api/factors", methods=["POST"])
+def factors():
+    """Fama-French Factor Analysis for a specific allocation."""
+    try:
+        data = request.get_json()
+        tickers = data.get("tickers", [])
+        start_date = data.get("start_date", "2020-01-01")
+        end_date = data.get("end_date", "2025-01-01")
+        weights = data.get("weights")
+
+        if not weights or not tickers:
+            return jsonify({"error": "Missing weights or tickers."}), 400
+
+        optimizer = PortfolioOptimizer(tickers, start_date, end_date)
+        result = optimizer.factor_analysis(weights)
+        return jsonify(result)
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 # ── SSE Streaming Optimization ──────────────────────────────────
 
 @app.route("/api/stream-optimize", methods=["POST"])
