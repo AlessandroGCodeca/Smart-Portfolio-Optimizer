@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Portfolio Optimizer — Interactive Dashboard</title>
+    <meta name="description" content="Optimize your stock portfolio using Modern Portfolio Theory with interactive efficient frontier visualization and multiple optimization strategies.">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <!-- Plotly.js -->
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+    <!-- App Styles -->
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- ── Header ─────────────────────────────────────────────── -->
+    <header id="app-header">
+        <div class="header-inner">
+            <div class="logo">
+                <span class="logo-icon">◈</span>
+                <h1>Smart Portfolio <span class="accent">Optimizer</span></h1>
+            </div>
+            <p class="tagline">Modern Portfolio Theory · Powered by Data</p>
+        </div>
+    </header>
+
+    <main id="app-main">
+        <!-- ── Input Panel ────────────────────────────────────── -->
+        <section id="input-panel" class="glass-panel">
+            <h2 class="section-title">Configure Portfolio</h2>
+
+            <div class="input-group">
+                <label for="ticker-input">Add Tickers</label>
+                <div class="ticker-input-wrapper">
+                    <div id="ticker-pills" class="ticker-pills"></div>
+                    <input type="text" id="ticker-input" placeholder="e.g. AAPL" autocomplete="off">
+                </div>
+                <p class="input-hint">Press Enter or comma to add · Click pill to remove</p>
+            </div>
+
+            <div class="input-row">
+                <div class="input-group">
+                    <label for="start-date">Start Date</label>
+                    <input type="date" id="start-date" value="2020-01-01">
+                </div>
+                <div class="input-group">
+                    <label for="end-date">End Date</label>
+                    <input type="date" id="end-date" value="2025-01-01">
+                </div>
+            </div>
+
+            <div class="input-row">
+                <div class="input-group">
+                    <label for="risk-free-rate">Risk-Free Rate</label>
+                    <div class="slider-wrapper">
+                        <input type="range" id="risk-free-rate" min="0" max="0.10" step="0.005" value="0.01">
+                        <span id="rf-value" class="slider-value">1.0%</span>
+                    </div>
+                </div>
+                <div class="input-group">
+                    <label for="num-portfolios">Simulations</label>
+                    <select id="num-portfolios">
+                        <option value="2000">2,000 (fast)</option>
+                        <option value="5000" selected>5,000 (balanced)</option>
+                        <option value="10000">10,000 (detailed)</option>
+                        <option value="25000">25,000 (precise)</option>
+                    </select>
+                </div>
+            </div>
+
+            <button id="optimize-btn" class="btn-primary">
+                <span class="btn-text">Optimize Portfolio</span>
+                <span class="btn-loader" style="display:none;">
+                    <span class="spinner"></span> Crunching numbers…
+                </span>
+            </button>
+        </section>
+
+        <!-- ── Error Banner ───────────────────────────────────── -->
+        <div id="error-banner" class="error-banner" style="display:none;">
+            <span class="error-icon">⚠</span>
+            <span id="error-message"></span>
+            <button id="error-close" class="error-close">✕</button>
+        </div>
+
+        <!-- ── Results Container (hidden until optimization runs) -->
+        <div id="results-container" style="display:none;">
+            <!-- Efficient Frontier Chart -->
+            <section id="chart-section" class="glass-panel">
+                <h2 class="section-title">Efficient Frontier</h2>
+                <div id="frontier-chart"></div>
+            </section>
+
+            <!-- Strategy Cards -->
+            <section id="strategies-section">
+                <h2 class="section-title">Optimization Strategies</h2>
+                <div id="strategy-cards" class="strategy-grid"></div>
+            </section>
+
+            <!-- Metrics Table -->
+            <section id="metrics-section" class="glass-panel">
+                <h2 class="section-title">Performance Metrics</h2>
+                <div class="table-wrapper">
+                    <table id="metrics-table">
+                        <thead>
+                            <tr>
+                                <th>Strategy</th>
+                                <th>Annual Return</th>
+                                <th>Annual Vol</th>
+                                <th>Sharpe</th>
+                                <th>Sortino</th>
+                                <th>Max Drawdown</th>
+                                <th>Calmar</th>
+                            </tr>
+                        </thead>
+                        <tbody id="metrics-body"></tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer id="app-footer">
+        <p>Smart Portfolio Optimizer &middot; Modern Portfolio Theory &middot; Built with Python &amp; Plotly</p>
+    </footer>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

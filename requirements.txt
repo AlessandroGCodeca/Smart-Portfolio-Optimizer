@@ -2,3 +2,6 @@ yfinance
 numpy
 pandas
 matplotlib
+scipy
+flask
+flask-cors
